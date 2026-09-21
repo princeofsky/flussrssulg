@@ -1,3 +1,5 @@
+import json
+import os
 import requests
 from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
@@ -5,8 +7,8 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
+HISTORY_FILE = "history.json"
 
-# Mots-clés / titres de menus à exclure explicitement
 EXCLUDED_TITLES = [
     "voir le documentaire",
     "recherche & innovation",
@@ -18,6 +20,16 @@ EXCLUDED_TITLES = [
     "presse"
 ]
 
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
 def build_rss():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -27,6 +39,8 @@ def build_rss():
     response.raise_for_status()
     
     soup = BeautifulSoup(response.content, "html.parser")
+    history = load_history()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     fg = FeedGenerator()
     fg.id(BASE_URL)
@@ -36,10 +50,8 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Ciblage préférentiel des blocs d'articles (hors navigation/menus)
     articles_blocks = soup.select('.k-card, .k-tile, article, .news-item, .fiche-summary, .content-list-item')
     
-    # Fallback : si les classes spécifiques évoluent, filtrer les conteneurs principaux
     if not articles_blocks:
         main_content = soup.find('main') or soup.find('div', id='content') or soup
         articles_blocks = main_content.find_all(['div', 'article', 'li'])
@@ -56,59 +68,61 @@ def build_rss():
         title = link_tag.get_text(strip=True)
         href = link_tag['href']
 
-        # 1. Filtre par longueur et titres exclus (ex. menus de navigation)
         if not title or len(title) < 15 or title.lower() in EXCLUDED_TITLES:
             continue
 
-        # 2. Filtre pour ne garder que les vrais liens d'articles
         if not ('/cms/c_' in href or '/news/' in href):
             continue
 
         full_url = urljoin(BASE_URL, href)
 
-        # Dédoublonnage
         if full_url in seen_links:
             continue
         seen_links.add(full_url)
 
-        # --- Extrait l'image de l'article ---
+        # Attribuer une date fixe si l'article a déjà été vu
+        if full_url in history:
+            pub_date = datetime.fromisoformat(history[full_url])
+        else:
+            pub_date = datetime.now(timezone.utc)
+            history[full_url] = pub_date.isoformat()
+
+        # Image
         image_url = None
         img_tag = block.find('img')
         if img_tag and img_tag.get('src'):
             src = img_tag.get('src') or img_tag.get('data-src')
-            if src and not src.startswith('data:'): # Ignorer les images en base64
+            if src and not src.startswith('data:'):
                 image_url = urljoin(BASE_URL, src)
 
-        # --- Extrait le résumé de l'article ---
+        # Résumé
         summary_text = title
         p_tag = block.find('p')
         if p_tag and len(p_tag.get_text(strip=True)) > 20:
             summary_text = p_tag.get_text(strip=True)
 
-        # --- Construction de la description HTML avec l'image ---
         description_html = ""
         if image_url:
             description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
         description_html += f'<p>{summary_text}</p>'
 
-        # --- Ajout de l'entrée dans le flux ---
         fe = fg.add_entry()
         fe.id(full_url)
         fe.title(title)
         fe.link(href=full_url)
         fe.description(description_html)
-        fe.pubDate(datetime.now(timezone.utc))
+        fe.pubDate(pub_date)
 
-        # Attacher l'image en tant qu'enclosure RSS (compatible lecteurs RSS)
         if image_url:
             fe.enclosure(image_url, 0, 'image/jpeg')
 
         count += 1
-        if count >= 30: # Limite aux 30 plus récents
+        if count >= 30:
             break
 
+    save_history(history)
     fg.rss_file('feed.xml')
-    print(f"Flux mis à jour : {count} articles valides avec images ajoutés.")
+    print(f"Flux mis à jour : {count} articles valides enregistrés.")
 
 if __name__ == '__main__':
     build_rss()
