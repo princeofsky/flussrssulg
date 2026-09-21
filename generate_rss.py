@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
@@ -9,7 +10,6 @@ from urllib.parse import urljoin
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 HISTORY_FILE = "history.json"
 
-# Mots-clés / titres de menus à exclure explicitement
 EXCLUDED_TITLES = [
     "voir le documentaire",
     "recherche & innovation",
@@ -18,7 +18,9 @@ EXCLUDED_TITLES = [
     "international",
     "toutes les news",
     "agenda",
-    "presse"
+    "presse",
+    "lire la suite",
+    "en savoir plus"
 ]
 
 def load_history():
@@ -33,6 +35,53 @@ def load_history():
 def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+
+def extract_image_from_card(card):
+    """ Extrait l'URL de l'image d'un bloc carte (balises <img>, lazy loading, ou style CSS) """
+    if not card:
+        return None
+
+    # 1. Chercher toutes les balises <img> dans la carte
+    for img in card.find_all('img'):
+        # Tester tous les attributs de source possibles
+        src = (
+            img.get('src') or 
+            img.get('data-src') or 
+            img.get('data-lazy-src') or 
+            img.get('data-original')
+        )
+        
+        # Gestion des attributs srcset / data-srcset
+        if not src:
+            srcset = img.get('srcset') or img.get('data-srcset')
+            if srcset:
+                src = srcset.split(',')[0].strip().split()[0]
+
+        if src and not src.startswith('data:'):
+            return src
+
+    # 2. Chercher dans les balises <picture> / <source>
+    for source in card.find_all('source'):
+        srcset = source.get('srcset') or source.get('data-srcset')
+        if srcset:
+            src = srcset.split(',')[0].strip().split()[0]
+            if src and not src.startswith('data:'):
+                return src
+
+    # 3. Chercher dans les styles CSS d'arrière-plan
+    bg_elements = card.find_all(style=re.compile(r'background-image', re.I))
+    if card.get('style') and 'background-image' in card.get('style').lower():
+        bg_elements.append(card)
+
+    for el in bg_elements:
+        style = el.get('style', '')
+        match = re.search(r'url\(([\'"]?)(.*?)\1\)', style, re.I)
+        if match:
+            bg_url = match.group(2)
+            if not bg_url.startswith('data:'):
+                return bg_url
+
+    return None
 
 def build_rss():
     headers = {
@@ -53,49 +102,55 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # 1. Cibler le conteneur principal de la page
     main_content = soup.find('main') or soup.find('div', id='content') or soup
 
-    # 2. Récupérer tous les liens du contenu principal
-    all_links = main_content.find_all('a', href=True)
+    # Sélection de tous les conteneurs d'articles possibles (y compris la Une)
+    cards = main_content.select(
+        '.k-card, .k-tile, article, .news-item, .fiche-summary, '
+        '.content-list-item, .featured-news, .news-featured, .k-card-featured, '
+        '[class*="card"], [class*="tile"], [class*="item"]'
+    )
 
     seen_links = set()
     count = 0
 
-    for link_tag in all_links:
+    for card in cards:
+        # Trouver le lien principal de la carte
+        link_tag = card.find('a', href=True)
+        if not link_tag:
+            continue
+
         href = link_tag['href']
-        title = link_tag.get_text(strip=True)
 
         # Filtre sur le format d'URL d'un article ULiège
         if not ('/cms/c_' in href or '/news/' in href):
             continue
 
-        # Exclure si le titre est trop court ou fait partie du menu
-        if not title or len(title) < 15 or title.lower() in EXCLUDED_TITLES:
-            continue
-
         full_url = urljoin(BASE_URL, href)
 
-        # Dédoublonnage
-        if full_url in seen_links:
+        if full_url in seen_links or '#' in href:
             continue
+
+        # Récupérer le titre (dans un header si présent, sinon le texte du lien)
+        title_tag = card.find(['h1', 'h2', 'h3', 'h4', 'h5', '.title', '.k-card__title'])
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+        else:
+            title = link_tag.get_text(strip=True)
+
+        if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
+            continue
+
         seen_links.add(full_url)
 
-        # Trouver le bloc parent le plus proche pour l'image et le résumé
-        parent_block = link_tag.find_parent(['article', 'div', 'li']) or link_tag
+        # Extraction de l'image
+        raw_image_url = extract_image_from_card(card)
+        image_url = urljoin(BASE_URL, raw_image_url) if raw_image_url else None
 
-        # Extrait de l'image
-        image_url = None
-        img_tag = parent_block.find('img')
-        if img_tag:
-            src = img_tag.get('src') or img_tag.get('data-src')
-            if src and not src.startswith('data:'):
-                image_url = urljoin(BASE_URL, src)
-
-        # Extrait du résumé
+        # Extraction du résumé
         summary_text = title
-        p_tag = parent_block.find('p')
-        if p_tag and len(p_tag.get_text(strip=True)) > 20:
+        p_tag = card.find('p')
+        if p_tag and len(p_tag.get_text(strip=True)) > 15:
             summary_text = p_tag.get_text(strip=True)
 
         # Gestion de l'historique de date
@@ -105,7 +160,7 @@ def build_rss():
             pub_date = datetime.now(timezone.utc)
             history[full_url] = pub_date.isoformat()
 
-        # Construction de la description HTML
+        # Construction de l'entrée RSS
         description_html = ""
         if image_url:
             description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
