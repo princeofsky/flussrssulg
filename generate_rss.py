@@ -20,7 +20,8 @@ EXCLUDED_TITLES = [
     "agenda",
     "presse",
     "lire la suite",
-    "en savoir plus"
+    "en savoir plus",
+    "en savoir +"
 ]
 
 def load_history():
@@ -36,22 +37,19 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
-def extract_image_from_card(card):
-    """ Extrait l'URL de l'image d'un bloc carte (balises <img>, lazy loading, ou style CSS) """
-    if not card:
+def extract_image_from_container(container):
+    """ Cherche l'image de l'article (img, srcset, lazy loading, picture ou background-image) """
+    if not container:
         return None
 
-    # 1. Chercher toutes les balises <img> dans la carte
-    for img in card.find_all('img'):
-        # Tester tous les attributs de source possibles
+    # 1. Balises <img>
+    for img in container.find_all('img'):
         src = (
             img.get('src') or 
             img.get('data-src') or 
             img.get('data-lazy-src') or 
             img.get('data-original')
         )
-        
-        # Gestion des attributs srcset / data-srcset
         if not src:
             srcset = img.get('srcset') or img.get('data-srcset')
             if srcset:
@@ -60,18 +58,18 @@ def extract_image_from_card(card):
         if src and not src.startswith('data:'):
             return src
 
-    # 2. Chercher dans les balises <picture> / <source>
-    for source in card.find_all('source'):
+    # 2. Balises <picture> / <source>
+    for source in container.find_all('source'):
         srcset = source.get('srcset') or source.get('data-srcset')
         if srcset:
             src = srcset.split(',')[0].strip().split()[0]
             if src and not src.startswith('data:'):
                 return src
 
-    # 3. Chercher dans les styles CSS d'arrière-plan
-    bg_elements = card.find_all(style=re.compile(r'background-image', re.I))
-    if card.get('style') and 'background-image' in card.get('style').lower():
-        bg_elements.append(card)
+    # 3. Arrière-plan CSS
+    bg_elements = container.find_all(style=re.compile(r'background-image', re.I))
+    if container.get('style') and 'background-image' in container.get('style').lower():
+        bg_elements.append(container)
 
     for el in bg_elements:
         style = el.get('style', '')
@@ -104,26 +102,21 @@ def build_rss():
 
     main_content = soup.find('main') or soup.find('div', id='content') or soup
 
-    # Sélection de tous les conteneurs d'articles possibles (y compris la Une)
-    cards = main_content.select(
-        '.k-card, .k-tile, article, .news-item, .fiche-summary, '
-        '.content-list-item, .featured-news, .news-featured, .k-card-featured, '
-        '[class*="card"], [class*="tile"], [class*="item"]'
-    )
+    # On récupère TOUS les liens du bloc principal
+    all_links = main_content.find_all('a', href=True)
 
     seen_links = set()
     count = 0
 
-    for card in cards:
-        # Trouver le lien principal de la carte
-        link_tag = card.find('a', href=True)
-        if not link_tag:
-            continue
+    for link in all_links:
+        href = link['href']
 
-        href = link_tag['href']
-
-        # Filtre sur le format d'URL d'un article ULiège
+        # 1. Filtre strict : doit être une actualité CMS et NE PAS être un événement/agenda
         if not ('/cms/c_' in href or '/news/' in href):
+            continue
+        
+        # Exclusion explicite des liens de type Agenda/Événements
+        if '/agenda' in href.lower() or '/evenement' in href.lower():
             continue
 
         full_url = urljoin(BASE_URL, href)
@@ -131,36 +124,52 @@ def build_rss():
         if full_url in seen_links or '#' in href:
             continue
 
-        # Récupérer le titre (dans un header si présent, sinon le texte du lien)
-        title_tag = card.find(['h1', 'h2', 'h3', 'h4', 'h5', '.title', '.k-card__title'])
+        # 2. Trouver la carte/conteneur le plus proche entourant ce lien
+        card = link.find_parent(['article', 'li'])
+        if not card:
+            # Chercher un div avec une classe significative
+            card = link.find_parent('div', class_=lambda c: c and any(k in c for k in ['card', 'tile', 'item', 'summary', 'block', 'news']))
+        if not card:
+            card = link.find_parent('div') or link
+
+        # Vérifier si la carte elle-même est dans un bloc dédié à l'agenda
+        card_classes = " ".join(card.get('class', [])).lower() if isinstance(card.get('class'), list) else str(card.get('class', '')).lower()
+        if 'agenda' in card_classes or 'event' in card_classes:
+            continue
+
+        # 3. Extraction du titre (priorité à un titre h1-h5 ou classe .title dans la carte)
+        title_tag = card.find(['h1', 'h2', 'h3', 'h4', 'h5']) or card.find(class_=re.compile(r'title', re.I))
         if title_tag:
             title = title_tag.get_text(strip=True)
         else:
-            title = link_tag.get_text(strip=True)
+            title = link.get_text(strip=True)
 
-        if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
+        if not title or len(title) < 12 or title.lower() in EXCLUDED_TITLES:
             continue
 
         seen_links.add(full_url)
 
-        # Extraction de l'image
-        raw_image_url = extract_image_from_card(card)
+        # 4. Extraction de l'image dans le conteneur (ou parents proches si besoin)
+        raw_image_url = extract_image_from_container(card)
+        if not raw_image_url and card.parent:
+            raw_image_url = extract_image_from_container(card.parent)
+
         image_url = urljoin(BASE_URL, raw_image_url) if raw_image_url else None
 
-        # Extraction du résumé
+        # 5. Extraction du résumé
         summary_text = title
         p_tag = card.find('p')
         if p_tag and len(p_tag.get_text(strip=True)) > 15:
             summary_text = p_tag.get_text(strip=True)
 
-        # Gestion de l'historique de date
+        # 6. Gestion de la date dans l'historique
         if full_url in history:
             pub_date = datetime.fromisoformat(history[full_url])
         else:
             pub_date = datetime.now(timezone.utc)
             history[full_url] = pub_date.isoformat()
 
-        # Construction de l'entrée RSS
+        # 7. Création de l'entrée RSS
         description_html = ""
         if image_url:
             description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
@@ -177,7 +186,7 @@ def build_rss():
             fe.enclosure(image_url, 0, 'image/jpeg')
 
         count += 1
-        if count >= 30:
+        if count >= 35: # Limite poussée à 35 articles
             break
 
     save_history(history)
