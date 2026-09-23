@@ -5,9 +5,10 @@ import requests
 from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
+DOMAIN_BASE = "https://www.news.uliege.be"
 HISTORY_FILE = "history.json"
 
 EXCLUDED_TITLES = [
@@ -39,6 +40,17 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
+def clean_url(href):
+    """ Construit une URL absolue propre en évitant les doublons de chemin """
+    if not href:
+        return None
+    href = href.strip()
+    if href.startswith('http://') or href.startswith('https://'):
+        return href
+    if not href.startswith('/'):
+        href = '/' + href
+    return urljoin(DOMAIN_BASE, href)
+
 def extract_image(card, current_url):
     """ Cherche l'image dans la carte et construit une URL absolue correcte """
     # 1. Recherche dans les balises <img>
@@ -53,7 +65,7 @@ def extract_image(card, current_url):
             src = img.get('srcset').split(',')[0].strip().split()[0]
 
         if src and not src.startswith('data:'):
-            return urljoin(current_url, src)
+            return clean_url(src)
 
     # 2. Recherche dans les balises <picture> / <source>
     for source in card.find_all('source'):
@@ -61,7 +73,7 @@ def extract_image(card, current_url):
         if srcset:
             src = srcset.split(',')[0].strip().split()[0]
             if src and not src.startswith('data:'):
-                return urljoin(current_url, src)
+                return clean_url(src)
 
     # 3. Recherche dans les styles d'arrière-plan CSS
     bg_elements = card.find_all(style=re.compile(r'background-image', re.I))
@@ -74,7 +86,7 @@ def extract_image(card, current_url):
         if match:
             bg_url = match.group(2).strip("'\"")
             if not bg_url.startswith('data:'):
-                return urljoin(current_url, bg_url)
+                return clean_url(bg_url)
 
     return None
 
@@ -87,11 +99,9 @@ def is_agenda_item(card, href, title):
         return True
         
     # Check classes et contenu texte du conteneur
-    card_text = card.get_text(" ", strip=True).lower()
     card_html = str(card).lower()
 
     if 'k-card--event' in card_html or 'agenda' in card_html:
-        # Vérification si le conteneur a une structure typique d'agenda (mois/jour séparé)
         if card.find(class_=re.compile(r'date|calendar|event', re.I)):
             return True
 
@@ -118,18 +128,30 @@ def build_rss():
 
     main_content = soup.find('main') or soup.find('div', id='content') or soup
 
-    # Récupération de tous les blocs de cartes possibles sur le portail K-Sup
+    # Sélection ciblée des cartes d'articles
     cards = main_content.select(
         '.k-card, .k-tile, article, .fiche-summary, .content-list-item, '
-        '[class*="card"], [class*="tile"], [class*="item"], [class*="article"]'
+        '[class*="k-card"], [class*="card"]'
     )
 
     seen_links = set()
     count = 0
 
     for card in cards:
-        # Recherche du lien principal dans la carte
-        link_tag = card.find('a', href=True)
+        # Éviter les conteneurs parents englobants si une sous-carte existe
+        if card.select('.k-card, .k-tile, article'):
+            continue
+
+        # Extraction prioritaire du titre et du lien directement liés
+        title_tag = card.find(['h1', 'h2', 'h3', 'h4', 'h5']) or card.find(class_=re.compile(r'title', re.I))
+        
+        link_tag = None
+        if title_tag:
+            link_tag = title_tag.find('a', href=True) or title_tag.find_parent('a', href=True)
+            
+        if not link_tag:
+            link_tag = card.find('a', href=True)
+
         if not link_tag:
             continue
 
@@ -139,14 +161,13 @@ def build_rss():
         if not href or href.startswith('#') or href.startswith('javascript:'):
             continue
 
-        full_url = urljoin(BASE_URL, href)
+        full_url = clean_url(href)
 
-        # Éliminer les domaines externes (ex. réseaux sociaux) qui ne sont pas des sites ULiège
-        if 'uliege.be' not in full_url:
+        # Éliminer les domaines externes (ex. réseaux sociaux)
+        if not full_url or 'uliege.be' not in full_url:
             continue
 
-        # Extraction du titre
-        title_tag = card.find(['h1', 'h2', 'h3', 'h4', 'h5']) or card.find(class_=re.compile(r'title', re.I))
+        # Extraction du texte du titre
         title = title_tag.get_text(strip=True) if title_tag else link_tag.get_text(strip=True)
 
         if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
@@ -161,16 +182,19 @@ def build_rss():
             continue
         seen_links.add(full_url)
 
-        # Extraction de l'image (en tenant compte du sous-domaine de l'article)
+        # Extraction de l'image
         image_url = extract_image(card, full_url)
-        if not image_url and card.parent:
-            image_url = extract_image(card.parent, full_url)
 
         # Extraction du résumé
-        summary_text = title
+        summary_text = ""
         p_tag = card.find('p')
-        if p_tag and len(p_tag.get_text(strip=True)) > 15:
-            summary_text = p_tag.get_text(strip=True)
+        if p_tag:
+            p_text = p_tag.get_text(strip=True)
+            if len(p_text) > 15 and p_text.lower() != title.lower():
+                summary_text = p_text
+
+        if not summary_text:
+            summary_text = title
 
         # Date stable via history.json
         if full_url in history:
