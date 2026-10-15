@@ -128,11 +128,18 @@ def build_rss():
 
     main_content = soup.find('main') or soup.find('div', id='content') or soup
 
-    # Sélection ciblée des cartes d'articles
+    # Nettoyage chirurgical : suppression des footers, menus et barres latérales pour éviter le bruit
+    for unwanted in main_content.find_all(['footer', 'nav', 'aside'], class_=re.compile(r'footer|menu|sidebar|navigation|bottom', re.I)):
+        unwanted.decompose()
+
+    # Sélection ciblée des cartes d'articles ou repli de secours
     cards = main_content.select(
         '.k-card, .k-tile, article, .fiche-summary, .content-list-item, '
         '[class*="k-card"], [class*="card"]'
     )
+    
+    if not cards:
+        cards = main_content.find_all(['article', 'div', 'li'], class_=re.compile(r'item|card|tile|news|summary|col', re.I))
 
     seen_links = set()
     count = 0
@@ -155,7 +162,7 @@ def build_rss():
         if not link_tag:
             continue
 
-        href = link_tag['href']
+        href = link_tag.get('href')
         
         # Ignorer les ancres, javascripts ou liens vides
         if not href or href.startswith('#') or href.startswith('javascript:'):
@@ -170,6 +177,7 @@ def build_rss():
         # Extraction du texte du titre
         title = title_tag.get_text(strip=True) if title_tag else link_tag.get_text(strip=True)
 
+        # Conservation de votre règle stricte d'origine (< 10 caractères)
         if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
             continue
 
