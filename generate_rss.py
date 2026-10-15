@@ -107,3 +107,16 @@ def build_rss():
     save_history(history)
     fg.rss_file('feed.xml')
     print(f"Flux mis à jour : {count} articles valides enregistrés.")
+
+if __name__ == '__main__':
+    try:
+        build_rss()
+    except Exception as e:
+        print(f"ERREUR CRITIQUE DANS LE SCRIPT : {e}")
+        raise e
+
+all_links = soup.find_all('a', href=True)
+    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page.")
+    
+    for link in all_links[:15]:  # Afficher les 15 premiers liens pour diagnostic
+        print(f"Lien brut : {link.get('href')} -> Texte : {link.get_text(strip=True)[:30]}")
