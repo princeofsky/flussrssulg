@@ -16,7 +16,6 @@ BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-tou
 DOMAIN_BASE = "https://www.news.uliege.be"
 HISTORY_FILE = "history.json"
 
-# Titres exacts ou mots-clés de menus à rejeter absolument (en minuscules)
 EXCLUDED_EXACT_TITLES = [
     "labels et accréditations",
     "s'informer",
@@ -25,12 +24,20 @@ EXCLUDED_EXACT_TITLES = [
     "facultés et instituts",
     "études",
     "recherche",
+    "agenda",
+    "portail news",
+    "toutes les news",
     "voir le documentaire",
     "recherche & innovation",
     "l'université de liège",
     "news & agendas",
     "international",
     "presse",
+    "lire la suite",
+    "en savoir plus",
+    "en savoir +",
+    "tous les événements",
+    "voir l'agenda"
 ]
 
 EXCLUDED_URL_PARTS = [
@@ -115,17 +122,19 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    all_links = soup.find_all('a', href=True)
-    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page après rendu JS.")
+    # Recherche ciblée sur les cartes/conteneurs d'articles de la grille
+    article_elements = soup.find_all(['article', 'div'], class_=re.compile(r'news|item|card|teaser|post|element', re.I))
+    print(f"DEBUG : {len(article_elements)} conteneurs potentiels d'articles trouvés.")
 
     seen_links = set()
     count = 0
 
-    for link in all_links:
-        href = link.get('href')
-        if not href or href.startswith('#') or href.startswith('javascript:'):
+    for container in article_elements:
+        link = container.find('a', href=True)
+        if not link:
             continue
-
+            
+        href = link.get('href')
         full_url = clean_url(href)
 
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
@@ -134,14 +143,11 @@ def build_rss():
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
             continue
 
-        title = link.get_text(strip=True)
-        
-        if not title or len(title) < 15:
-            parent = link.find_parent(['article', 'div', 'li', 'p'])
-            if parent:
-                t_tag = parent.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-                if t_tag:
-                    title = t_tag.get_text(strip=True)
+        title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+        else:
+            title = link.get_text(strip=True)
 
         if not title or len(title) < 15:
             continue
@@ -150,15 +156,14 @@ def build_rss():
         if any(exc in title_lower for exc in EXCLUDED_EXACT_TITLES):
             continue
 
-        parent_container = link.find_parent(['article', 'div', 'li']) or link
-        if is_agenda_item(parent_container, href, title):
+        if is_agenda_item(container, href, title):
             continue
 
         if full_url in seen_links:
             continue
         seen_links.add(full_url)
 
-        image_url = extract_image(parent_container, full_url)
+        image_url = extract_image(container, full_url)
         summary_text = title
 
         if full_url in history:
@@ -189,7 +194,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script principal avec filtre strict...")
+        print("Démarrage du script principal avec ciblage par cartes...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
