@@ -1,3 +1,106 @@
+import json
+import os
+import re
+import requests
+from bs4 import BeautifulSoup
+from feedgen.feed import FeedGenerator
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
+
+BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
+DOMAIN_BASE = "https://www.news.uliege.be"
+HISTORY_FILE = "history.json"
+
+EXCLUDED_TITLES = [
+    "voir le documentaire",
+    "recherche & innovation",
+    "l'université de liège",
+    "news & agendas",
+    "international",
+    "toutes les news",
+    "agenda",
+    "presse",
+    "lire la suite",
+    "en savoir plus",
+    "en savoir +",
+    "tous les événements",
+    "voir l'agenda"
+]
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+def clean_url(href):
+    """ Construit une URL absolue propre en évitant les doublons de chemin """
+    if not href:
+        return None
+    href = href.strip()
+    if href.startswith('http://') or href.startswith('https://'):
+        return href
+    if not href.startswith('/'):
+        href = '/' + href
+    return urljoin(DOMAIN_BASE, href)
+
+def extract_image(card, current_url):
+    """ Cherche l'image dans la carte et construit une URL absolue correcte """
+    for img in card.find_all('img'):
+        src = (
+            img.get('src') or 
+            img.get('data-src') or 
+            img.get('data-lazy-src') or 
+            img.get('data-original')
+        )
+        if not src and img.get('srcset'):
+            src = img.get('srcset').split(',')[0].strip().split()[0]
+
+        if src and not src.startswith('data:'):
+            return clean_url(src)
+
+    for source in card.find_all('source'):
+        srcset = source.get('srcset') or source.get('data-srcset')
+        if srcset:
+            src = srcset.split(',')[0].strip().split()[0]
+            if src and not src.startswith('data:'):
+                return clean_url(src)
+
+    bg_elements = card.find_all(style=re.compile(r'background-image', re.I))
+    if card.get('style') and 'background-image' in card.get('style').lower():
+        bg_elements.append(card)
+
+    for el in bg_elements:
+        style = el.get('style', '')
+        match = re.search(r'url\(([\'"]?)(.*?)\1\)', style, re.I)
+        if match:
+            bg_url = match.group(2).strip("'\"")
+            if not bg_url.startswith('data:'):
+                return clean_url(bg_url)
+
+    return None
+
+def is_agenda_item(card, href, title):
+    """ Détermine si un élément appartient à l'agenda plutôt qu'aux news """
+    href_lower = href.lower()
+    
+    if any(k in href_lower for k in ['/agenda', '/evenement', '/event', 'calendar']):
+        return True
+        
+    card_html = str(card).lower()
+    if 'k-card--event' in card_html or 'agenda' in card_html:
+        if card.find(class_=re.compile(r'date|calendar|event', re.I)):
+            return True
+
+    return False
+
 def build_rss():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -20,9 +123,8 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # On cible directement TOUS les liens de la page contenant '/cms/' (la structure des articles ULiège)
     all_links = soup.find_all('a', href=True)
-    print(f"Nombre total de liens trouvés sur la page : {len(all_links)}")
+    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page.")
 
     seen_links = set()
     count = 0
@@ -34,14 +136,11 @@ def build_rss():
 
         full_url = clean_url(href)
 
-        # On ne garde que les liens internes pointant vers le système de CMS de news de l'ULiège
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
-        # Récupération du texte du lien ou d'un titre proche
         title = link.get_text(strip=True)
         
-        # Si le lien lui-même n'a pas de texte, on cherche un titre (h1-h5) dans le parent direct
         if not title or len(title) < 10:
             parent = link.find_parent(['article', 'div', 'li', 'p'])
             if parent:
@@ -49,24 +148,19 @@ def build_rss():
                 if t_tag:
                     title = t_tag.get_text(strip=True)
 
-        # Application de vos filtres de titre
         if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
             continue
 
-        # Vérification agenda
         parent_container = link.find_parent(['article', 'div', 'li']) or link
         if is_agenda_item(parent_container, href, title):
             continue
 
-        # Dédoublonnage strict par URL
         if full_url in seen_links:
             continue
         seen_links.add(full_url)
 
-        # Recherche d'image dans le conteneur parent le plus proche
         image_url = extract_image(parent_container, full_url)
 
-        # Extraction d'un résumé potentiel (<p> dans le parent)
         summary_text = ""
         p_tag = parent_container.find('p')
         if p_tag:
@@ -77,14 +171,12 @@ def build_rss():
         if not summary_text:
             summary_text = title
 
-        # Gestion de l'historique des dates
         if full_url in history:
             pub_date = datetime.fromisoformat(history[full_url])
         else:
             pub_date = datetime.now(timezone.utc)
             history[full_url] = pub_date.isoformat()
 
-        # Construction du HTML
         description_html = ""
         if image_url:
             description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
@@ -114,9 +206,3 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"ERREUR CRITIQUE DANS LE SCRIPT : {e}")
         raise e
-
-all_links = soup.find_all('a', href=True)
-    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page.")
-    
-    for link in all_links[:15]:  # Afficher les 15 premiers liens pour diagnostic
-        print(f"Lien brut : {link.get('href')} -> Texte : {link.get_text(strip=True)[:30]}")
