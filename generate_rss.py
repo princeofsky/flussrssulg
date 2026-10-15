@@ -16,24 +16,21 @@ BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-tou
 DOMAIN_BASE = "https://www.news.uliege.be"
 HISTORY_FILE = "history.json"
 
-EXCLUDED_TITLES = [
+# Titres exacts ou mots-clés de menus à rejeter absolument (en minuscules)
+EXCLUDED_EXACT_TITLES = [
+    "labels et accréditations",
+    "s'informer",
+    "médias de l'uliège",
+    "grandes conférences universitaires",
+    "facultés et instituts",
+    "études",
+    "recherche",
     "voir le documentaire",
     "recherche & innovation",
     "l'université de liège",
     "news & agendas",
     "international",
-    "toutes les news",
-    "agenda",
     "presse",
-    "lire la suite",
-    "en savoir plus",
-    "en savoir +",
-    "tous les événements",
-    "voir l'agenda",
-    "labels et accréditations",
-    "s'informer",
-    "médias de l'uliège",
-    "grandes conférences universitaires"
 ]
 
 EXCLUDED_URL_PARTS = [
@@ -146,7 +143,11 @@ def build_rss():
                 if t_tag:
                     title = t_tag.get_text(strip=True)
 
-        if not title or len(title) < 15 or title.lower() in EXCLUDED_TITLES:
+        if not title or len(title) < 15:
+            continue
+
+        title_lower = title.lower()
+        if any(exc in title_lower for exc in EXCLUDED_EXACT_TITLES):
             continue
 
         parent_container = link.find_parent(['article', 'div', 'li']) or link
@@ -188,7 +189,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script principal...")
+        print("Démarrage du script principal avec filtre strict...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
