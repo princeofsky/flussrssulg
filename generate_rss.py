@@ -2,11 +2,11 @@ import sys
 import json
 import os
 import re
-import requests
 from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
+from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -71,19 +71,27 @@ def is_agenda_item(card, href, title):
         return True
     return False
 
+def fetch_page_html():
+    """ Utilise Playwright pour charger la page et exécuter le JavaScript """
+    print(f"Lancement de Playwright pour interroger {BASE_URL}...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        page.goto(BASE_URL, timeout=45000)
+        
+        # On attend un court instant que les éléments dynamiques/JS finissent de s'injecter
+        print("Attente du chargement complet du contenu JavaScript...")
+        page.wait_for_timeout(4000)
+        
+        html_content = page.content()
+        browser.close()
+        return html_content
+
 def build_rss():
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
+    html_content = fetch_page_html()
+    print(f"Taille du HTML récupéré via Playwright : {len(html_content)} octets")
     
-    print(f"Interrogation de {BASE_URL}...")
-    response = session.get(BASE_URL, headers=headers, timeout=15)
-    print(f"Code HTTP reçu : {response.status_code}")
-    print(f"Taille de la réponse reçue : {len(response.content)} octets")
-    response.raise_for_status()
-    
-    soup = BeautifulSoup(response.content, "html.parser")
+    soup = BeautifulSoup(html_content, "html.parser")
     history = load_history()
 
     fg = FeedGenerator()
@@ -95,11 +103,7 @@ def build_rss():
     fg.language('fr')
 
     all_links = soup.find_all('a', href=True)
-    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page.")
-
-    # DIAGNOSTIC : Affichons les 15 premiers liens pour voir ce que contient vraiment la page
-    for i, link in enumerate(all_links[:15]):
-        print(f"Lien #{i+1} : {link.get('href')} | Texte : {link.get_text(strip=True)[:30]}")
+    print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page après rendu JS.")
 
     seen_links = set()
     count = 0
@@ -111,10 +115,7 @@ def build_rss():
 
         full_url = clean_url(href)
 
-        # On élargit le filtre pour voir quels liens du domaine sortent
-        if not full_url or 'uliege.be' not in full_url:
-            continue
-        if any(ext in full_url.lower() for ext in ['.jpg', '.png', '.pdf', '.css', '.js', '.ico']):
+        if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
         title = link.get_text(strip=True)
@@ -167,7 +168,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Lancement de build_rss()...")
+        print("Démarrage du script Playwright...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
