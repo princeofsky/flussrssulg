@@ -1,20 +1,12 @@
 import sys
-
-print("Python version:", sys.version)
-
-try:
-    import json
-    import os
-    import re
-    import requests
-    from bs4 import BeautifulSoup
-    from feedgen.feed import FeedGenerator
-    from datetime import datetime, timezone
-    from urllib.parse import urljoin, urlparse
-    print("Tous les modules ont été importés avec succès.")
-except Exception as e:
-    print(f"ERREUR LORS DE L'IMPORTATION DES MODULES : {e}")
-    raise e
+import json
+import os
+import re
+import requests
+from bs4 import BeautifulSoup
+from feedgen.feed import FeedGenerator
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -105,6 +97,10 @@ def build_rss():
     all_links = soup.find_all('a', href=True)
     print(f"DEBUG TOTAL : {len(all_links)} liens trouvés sur la page.")
 
+    # DIAGNOSTIC : Affichons les 15 premiers liens pour voir ce que contient vraiment la page
+    for i, link in enumerate(all_links[:15]):
+        print(f"Lien #{i+1} : {link.get('href')} | Texte : {link.get_text(strip=True)[:30]}")
+
     seen_links = set()
     count = 0
 
@@ -114,7 +110,11 @@ def build_rss():
             continue
 
         full_url = clean_url(href)
-        if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
+
+        # On élargit le filtre pour voir quels liens du domaine sortent
+        if not full_url or 'uliege.be' not in full_url:
+            continue
+        if any(ext in full_url.lower() for ext in ['.jpg', '.png', '.pdf', '.css', '.js', '.ico']):
             continue
 
         title = link.get_text(strip=True)
