@@ -1,11 +1,20 @@
-import json
-import os
-import re
-import requests
-from bs4 import BeautifulSoup
-from feedgen.feed import FeedGenerator
-from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+import sys
+
+print("Python version:", sys.version)
+
+try:
+    import json
+    import os
+    import re
+    import requests
+    from bs4 import BeautifulSoup
+    from feedgen.feed import FeedGenerator
+    from datetime import datetime, timezone
+    from urllib.parse import urljoin, urlparse
+    print("Tous les modules ont été importés avec succès.")
+except Exception as e:
+    print(f"ERREUR LORS DE L'IMPORTATION DES MODULES : {e}")
+    raise e
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -41,7 +50,6 @@ def save_history(history):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 def clean_url(href):
-    """ Construit une URL absolue propre en évitant les doublons de chemin """
     if not href:
         return None
     href = href.strip()
@@ -52,7 +60,6 @@ def clean_url(href):
     return urljoin(DOMAIN_BASE, href)
 
 def extract_image(card, current_url):
-    """ Cherche l'image dans la carte et construit une URL absolue correcte """
     for img in card.find_all('img'):
         src = (
             img.get('src') or 
@@ -62,54 +69,20 @@ def extract_image(card, current_url):
         )
         if not src and img.get('srcset'):
             src = img.get('srcset').split(',')[0].strip().split()[0]
-
         if src and not src.startswith('data:'):
             return clean_url(src)
-
-    for source in card.find_all('source'):
-        srcset = source.get('srcset') or source.get('data-srcset')
-        if srcset:
-            src = srcset.split(',')[0].strip().split()[0]
-            if src and not src.startswith('data:'):
-                return clean_url(src)
-
-    bg_elements = card.find_all(style=re.compile(r'background-image', re.I))
-    if card.get('style') and 'background-image' in card.get('style').lower():
-        bg_elements.append(card)
-
-    for el in bg_elements:
-        style = el.get('style', '')
-        match = re.search(r'url\(([\'"]?)(.*?)\1\)', style, re.I)
-        if match:
-            bg_url = match.group(2).strip("'\"")
-            if not bg_url.startswith('data:'):
-                return clean_url(bg_url)
-
     return None
 
 def is_agenda_item(card, href, title):
-    """ Détermine si un élément appartient à l'agenda plutôt qu'aux news """
     href_lower = href.lower()
-    
     if any(k in href_lower for k in ['/agenda', '/evenement', '/event', 'calendar']):
         return True
-        
-    card_html = str(card).lower()
-    if 'k-card--event' in card_html or 'agenda' in card_html:
-        if card.find(class_=re.compile(r'date|calendar|event', re.I)):
-            return True
-
     return False
 
 def build_rss():
     session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.9,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
     print(f"Interrogation de {BASE_URL}...")
@@ -141,12 +114,10 @@ def build_rss():
             continue
 
         full_url = clean_url(href)
-
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
         title = link.get_text(strip=True)
-        
         if not title or len(title) < 10:
             parent = link.find_parent(['article', 'div', 'li', 'p'])
             if parent:
@@ -166,18 +137,41 @@ def build_rss():
         seen_links.add(full_url)
 
         image_url = extract_image(parent_container, full_url)
-
-        summary_text = ""
-        p_tag = parent_container.find('p')
-        if p_tag:
-            p_text = p_tag.get_text(strip=True)
-            if len(p_text) > 15 and p_text.lower() != title.lower():
-                summary_text = p_text
-
-        if not summary_text:
-            summary_text = title
+        summary_text = title
 
         if full_url in history:
             pub_date = datetime.fromisoformat(history[full_url])
         else:
             pub_date = datetime.now(timezone.utc)
+            history[full_url] = pub_date.isoformat()
+
+        description_html = ""
+        if image_url:
+            description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
+        description_html += f'<p>{summary_text}</p>'
+
+        fe = fg.add_entry()
+        fe.id(full_url)
+        fe.title(title)
+        fe.link(href=full_url)
+        fe.description(description_html)
+        fe.pubDate(pub_date)
+
+        count += 1
+        if count >= 35:
+            break
+
+    save_history(history)
+    fg.rss_file('feed.xml')
+    print(f"Flux mis à jour : {count} articles valides enregistrés.")
+
+if __name__ == '__main__':
+    try:
+        print("Lancement de build_rss()...")
+        build_rss()
+        print("Script exécuté avec succès !")
+    except Exception as e:
+        import traceback
+        print("ERREUR FATALE DANS LE SCRIPT :")
+        traceback.print_exc()
+        sys.exit(1)
