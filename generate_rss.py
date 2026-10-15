@@ -102,14 +102,20 @@ def is_agenda_item(card, href, title):
     return False
 
 def build_rss():
+    session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.9,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
     
     print(f"Interrogation de {BASE_URL}...")
-    response = requests.get(BASE_URL, headers=headers, timeout=15)
+    response = session.get(BASE_URL, headers=headers, timeout=15)
     print(f"Code HTTP reçu : {response.status_code}")
+    print(f"Taille de la réponse reçue : {len(response.content)} octets")
     response.raise_for_status()
     
     soup = BeautifulSoup(response.content, "html.parser")
@@ -175,34 +181,3 @@ def build_rss():
             pub_date = datetime.fromisoformat(history[full_url])
         else:
             pub_date = datetime.now(timezone.utc)
-            history[full_url] = pub_date.isoformat()
-
-        description_html = ""
-        if image_url:
-            description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
-        description_html += f'<p>{summary_text}</p>'
-
-        fe = fg.add_entry()
-        fe.id(full_url)
-        fe.title(title)
-        fe.link(href=full_url)
-        fe.description(description_html)
-        fe.pubDate(pub_date)
-
-        if image_url:
-            fe.enclosure(image_url, 0, 'image/jpeg')
-
-        count += 1
-        if count >= 35:
-            break
-
-    save_history(history)
-    fg.rss_file('feed.xml')
-    print(f"Flux mis à jour : {count} articles valides enregistrés.")
-
-if __name__ == '__main__':
-    try:
-        build_rss()
-    except Exception as e:
-        print(f"ERREUR CRITIQUE DANS LE SCRIPT : {e}")
-        raise e
