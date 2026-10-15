@@ -2,11 +2,15 @@ import sys
 import json
 import os
 import re
+
+print("Étape 1 : Modules de base importés.")
+
 from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
-from playwright.sync_api import sync_playwright
+
+print("Étape 2 : BeautifulSoup et FeedGenerator importés.")
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -32,7 +36,6 @@ EXCLUDED_TITLES = [
     "grandes conférences universitaires"
 ]
 
-# Mots-clés ou fragments d'URL caractéristiques des menus de navigation et rubriques fixes
 EXCLUDED_URL_PARTS = [
     '/labels', '/s-informer', '/medias', '/conferences', '/annuaire', 
     '/facultes', '/etudes', '/recherche', '/agenda', '/contact', 
@@ -84,7 +87,9 @@ def is_agenda_item(card, href, title):
     return False
 
 def fetch_page_html():
-    """ Utilise Playwright pour charger la page et exécuter le JavaScript """
+    print("Étape 3 : Importation de Playwright à l'intérieur de la fonction...")
+    from playwright.sync_api import sync_playwright
+    
     print(f"Lancement de Playwright pour interroger {BASE_URL}...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -129,13 +134,11 @@ def build_rss():
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
-        # FILTRE ANTI-MENU : Si l'URL contient une rubrique de navigation fixe, on l'ignore
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
             continue
 
         title = link.get_text(strip=True)
         
-        # Exigence d'un titre d'au moins 15 caractères pour écarter les petits libellés de menu
         if not title or len(title) < 15:
             parent = link.find_parent(['article', 'div', 'li', 'p'])
             if parent:
@@ -176,3 +179,20 @@ def build_rss():
         fe.pubDate(pub_date)
 
         count += 1
+        if count >= 35:
+            break
+
+    save_history(history)
+    fg.rss_file('feed.xml')
+    print(f"Flux mis à jour : {count} articles valides enregistrés.")
+
+if __name__ == '__main__':
+    try:
+        print("Démarrage du script principal...")
+        build_rss()
+        print("Script exécuté avec succès !")
+    except Exception as e:
+        import traceback
+        print("ERREUR FATALE DANS LE SCRIPT :")
+        traceback.print_exc()
+        sys.exit(1)
