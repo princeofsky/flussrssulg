@@ -25,7 +25,19 @@ EXCLUDED_TITLES = [
     "en savoir plus",
     "en savoir +",
     "tous les événements",
-    "voir l'agenda"
+    "voir l'agenda",
+    "labels et accréditations",
+    "s'informer",
+    "médias de l'uliège",
+    "grandes conférences universitaires"
+]
+
+# Mots-clés ou fragments d'URL caractéristiques des menus de navigation et rubriques fixes
+EXCLUDED_URL_PARTS = [
+    '/labels', '/s-informer', '/medias', '/conferences', '/annuaire', 
+    '/facultes', '/etudes', '/recherche', '/agenda', '/contact', 
+    '/plan', '/mentions-legales', '/credits', '/accessibilite',
+    '/portail', '/navigation', '/footer', '/menu'
 ]
 
 def load_history():
@@ -79,7 +91,6 @@ def fetch_page_html():
         page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         page.goto(BASE_URL, timeout=45000)
         
-        # On attend un court instant que les éléments dynamiques/JS finissent de s'injecter
         print("Attente du chargement complet du contenu JavaScript...")
         page.wait_for_timeout(4000)
         
@@ -118,15 +129,21 @@ def build_rss():
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
+        # FILTRE ANTI-MENU : Si l'URL contient une rubrique de navigation fixe, on l'ignore
+        if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
+            continue
+
         title = link.get_text(strip=True)
-        if not title or len(title) < 10:
+        
+        # Exigence d'un titre d'au moins 15 caractères pour écarter les petits libellés de menu
+        if not title or len(title) < 15:
             parent = link.find_parent(['article', 'div', 'li', 'p'])
             if parent:
                 t_tag = parent.find(['h1', 'h2', 'h3', 'h4', 'h5'])
                 if t_tag:
                     title = t_tag.get_text(strip=True)
 
-        if not title or len(title) < 10 or title.lower() in EXCLUDED_TITLES:
+        if not title or len(title) < 15 or title.lower() in EXCLUDED_TITLES:
             continue
 
         parent_container = link.find_parent(['article', 'div', 'li']) or link
@@ -159,20 +176,3 @@ def build_rss():
         fe.pubDate(pub_date)
 
         count += 1
-        if count >= 35:
-            break
-
-    save_history(history)
-    fg.rss_file('feed.xml')
-    print(f"Flux mis à jour : {count} articles valides enregistrés.")
-
-if __name__ == '__main__':
-    try:
-        print("Démarrage du script Playwright...")
-        build_rss()
-        print("Script exécuté avec succès !")
-    except Exception as e:
-        import traceback
-        print("ERREUR FATALE DANS LE SCRIPT :")
-        traceback.print_exc()
-        sys.exit(1)
