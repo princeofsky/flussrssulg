@@ -83,18 +83,25 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Extraction directe via Regex des URLs contenant /cms/ dans tout le texte brut
-    raw_urls = re.findall(r'https?://[^\s<>"]+?/cms/[^\s<>"]*|/[^\s<>"]+?/cms/[^\s<>"]*', html_content)
-    print(f"DEBUG : {len(raw_urls)} URLs brutes contenant '/cms/' trouvées.")
+    # Recherche universelle de tous les liens href dans le HTML brut
+    all_hrefs = re.findall(r'href=["\']([^"\']+)["\']', html_content)
+    print(f"DEBUG : {len(all_hrefs)} liens href totaux extraits du code source.")
 
     seen_links = set()
     count = 0
 
-    for href in raw_urls:
-        href = href.strip('"\'\\')
+    for href in all_hrefs:
         full_url = clean_url(href)
 
-        if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
+        if not full_url or 'uliege.be' not in full_url:
+            continue
+
+        # Signature JCMS : Les articles possèdent un ID de contenu de type c_ suivi de chiffres (ex: c_9435330)
+        if not re.search(r'/c_\d+/', full_url):
+            continue
+
+        # Exclure l'URL de la page d'accueil elle-même si elle remonte
+        if full_url.rstrip('/') == BASE_URL.rstrip('/'):
             continue
 
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
@@ -104,7 +111,7 @@ def build_rss():
             continue
         seen_links.add(full_url)
 
-        # Génération d'un titre basé sur le slug de l'URL
+        # Génération d'un titre propre basé sur le slug de l'URL
         path_parts = urlparse(full_url).path.split('/')
         slug = path_parts[-1] if path_parts else "Actualité ULiège"
         clean_title = re.sub(r'[-_]', ' ', slug).capitalize()
@@ -140,7 +147,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec extraction Regex...")
+        print("Démarrage du script avec signature JCMS (c_digits)...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
