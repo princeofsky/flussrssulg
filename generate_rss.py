@@ -1,112 +1,3 @@
-import sys
-import json
-import os
-import re
-
-print("Étape 1 : Modules de base importés.")
-
-from bs4 import BeautifulSoup
-from feedgen.feed import FeedGenerator
-from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
-
-print("Étape 2 : BeautifulSoup et FeedGenerator importés.")
-
-BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
-DOMAIN_BASE = "https://www.news.uliege.be"
-HISTORY_FILE = "history.json"
-
-EXCLUDED_EXACT_TITLES = [
-    "labels et accréditations",
-    "s'informer",
-    "médias de l'uliège",
-    "grandes conférences universitaires",
-    "facultés et instituts",
-    "études",
-    "recherche",
-    "agenda",
-    "portail news",
-    "toutes les news",
-    "voir le documentaire",
-    "recherche & innovation",
-    "l'université de liège",
-    "news & agendas",
-    "international",
-    "presse",
-    "lire la suite",
-    "en savoir plus",
-    "en savoir +",
-    "tous les événements",
-    "voir l'agenda"
-]
-
-EXCLUDED_URL_PARTS = [
-    '/labels', '/s-informer', '/medias', '/conferences', '/annuaire', 
-    '/facultes', '/etudes', '/recherche', '/agenda', '/contact', 
-    '/plan', '/mentions-legales', '/credits', '/accessibilite',
-    '/portail', '/navigation', '/footer', '/menu'
-]
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-    return {}
-
-def save_history(history):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
-
-def clean_url(href):
-    if not href:
-        return None
-    href = href.strip()
-    if href.startswith('http://') or href.startswith('https://'):
-        return href
-    if not href.startswith('/'):
-        href = '/' + href
-    return urljoin(DOMAIN_BASE, href)
-
-def extract_image(card, current_url):
-    for img in card.find_all('img'):
-        src = (
-            img.get('src') or 
-            img.get('data-src') or 
-            img.get('data-lazy-src') or 
-            img.get('data-original')
-        )
-        if not src and img.get('srcset'):
-            src = img.get('srcset').split(',')[0].strip().split()[0]
-        if src and not src.startswith('data:'):
-            return clean_url(src)
-    return None
-
-def is_agenda_item(card, href, title):
-    href_lower = href.lower()
-    if any(k in href_lower for k in ['/agenda', '/evenement', '/event', 'calendar']):
-        return True
-    return False
-
-def fetch_page_html():
-    print("Étape 3 : Importation de Playwright à l'intérieur de la fonction...")
-    from playwright.sync_api import sync_playwright
-    
-    print(f"Lancement de Playwright pour interroger {BASE_URL}...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        page.goto(BASE_URL, timeout=45000)
-        
-        print("Attente du chargement complet du contenu JavaScript...")
-        page.wait_for_timeout(4000)
-        
-        html_content = page.content()
-        browser.close()
-        return html_content
-
 def build_rss():
     html_content = fetch_page_html()
     print(f"Taille du HTML récupéré via Playwright : {len(html_content)} octets")
@@ -122,45 +13,43 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # 1. Recherche ciblée sur les structures types de listes / portlets JCMS
-    article_elements = soup.find_all(['article', 'div', 'li'], class_=re.compile(r'portlet|item|card|pub|list-item|media|news', re.I))
-    
-    # 2. Fallback de sécurité si les classes spécifiques ont évolué (grilles JCMS)
-    if not article_elements:
-        article_elements = soup.find_all('div', class_=re.compile(r'col-|grid-|item', re.I))
-
-    print(f"DEBUG : {len(article_elements)} conteneurs potentiels d'articles trouvés.")
+    # Approche robuste : On cible tous les liens vers des articles (/cms/) sur la page,
+    # en s'affranchissant des classes CSS des conteneurs qui changent tout le temps.
+    all_links = soup.find_all('a', href=True)
+    print(f"DEBUG : {len(all_links)} liens totaux trouvés sur la page.")
 
     seen_links = set()
     count = 0
 
-    for container in article_elements:
-        # Sécurité anti-menus JCMS : Ignorer si le conteneur est dans un menu, header ou footer
-        if container.find_parent(['nav', 'header', 'footer']):
-            continue
-        
-        classes = container.get('class', [])
-        if any('menu' in c.lower() or 'navigation' in c.lower() or 'footer' in c.lower() for c in classes):
-            continue
-
-        link = container.find('a', href=True)
-        if not link:
-            continue
-            
+    for link in all_links:
         href = link.get('href')
         full_url = clean_url(href)
 
+        # Filtrer uniquement les liens valides d'articles ULiège contenant /cms/
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
             continue
 
-        title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        else:
-            title = link.get_text(strip=True)
+        # Sécurité anti-menus : Ignorer si le lien se trouve dans un menu, header ou footer
+        if link.find_parent(['nav', 'header', 'footer', 'aside']):
+            continue
+
+        # Remonter au conteneur parent proche (ex: bloc de carte, li, div) pour trouver l'image
+        container = link.find_parent(['article', 'div', 'li', 'section']) or link
+
+        # Ignorer si le conteneur ou ses parents ont des classes de navigation/menu
+        parent_classes = " ".join([str(cls) for p in link.parents for cls in p.get('class', [])]).lower()
+        if any(term in parent_classes for term in ['menu', 'nav', 'breadcrumb', 'footer', 'header', 'facette', 'filter']):
+            continue
+
+        # Extraction du titre
+        title = link.get_text(strip=True)
+        if not title or len(title) < 15:
+            title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
+            if title_tag:
+                title = title_tag.get_text(strip=True)
 
         if not title or len(title) < 15:
             continue
@@ -204,14 +93,3 @@ def build_rss():
     save_history(history)
     fg.rss_file('feed.xml')
     print(f"Flux mis à jour : {count} articles valides enregistrés.")
-
-if __name__ == '__main__':
-    try:
-        print("Démarrage du script principal avec ciblage par cartes...")
-        build_rss()
-        print("Script exécuté avec succès !")
-    except Exception as e:
-        import traceback
-        print("ERREUR FATALE DANS LE SCRIPT :")
-        traceback.print_exc()
-        sys.exit(1)
