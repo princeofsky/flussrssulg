@@ -5,13 +5,12 @@ import re
 
 print("Étape 1 : Modules de base importés.")
 
-from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 import urllib.request
 
-print("Étape 2 : BeautifulSoup, FeedGenerator et urllib importés.")
+print("Étape 2 : FeedGenerator et urllib importés.")
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -75,9 +74,7 @@ def build_rss():
     html_content = fetch_page_html()
     print(f"Taille du HTML récupéré : {len(html_content)} octets")
     
-    soup = BeautifulSoup(html_content, "html.parser")
     history = load_history()
-
     fg = FeedGenerator()
     fg.id(BASE_URL)
     fg.title("ULiège - Toutes les news")
@@ -86,22 +83,17 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Utilisation de BeautifulSoup pour récupérer tous les liens proprement
-    all_links = soup.find_all('a', href=True)
-    print(f"DEBUG : {len(all_links)} balises <a> trouvées via BeautifulSoup.")
+    # Recherche directe dans toutes les chaînes entre guillemets du code source brut contenant /c_ suivi de chiffres
+    raw_matches = re.findall(r'["\']([^"\']*?/c_\d+[^"\']*)["\']', html_content)
+    print(f"DEBUG : {len(raw_matches)} correspondances brutes trouvées avec /c_XX/.")
 
     seen_links = set()
     count = 0
 
-    for link in all_links:
-        href = link.get('href')
-        full_url = clean_url(href)
+    for path in raw_matches:
+        full_url = clean_url(path)
 
         if not full_url or 'uliege.be' not in full_url:
-            continue
-
-        # Signature JCMS : Les articles possèdent un ID de contenu de type c_ suivi de chiffres (ex: c_9435330)
-        if not re.search(r'/c_\d+/', full_url):
             continue
 
         if full_url.rstrip('/') == BASE_URL.rstrip('/'):
@@ -114,22 +106,12 @@ def build_rss():
             continue
         seen_links.add(full_url)
 
-        # Extraction d'un titre propre (texte du lien ou titre de la balise parente)
-        title = link.get_text(strip=True)
-        if not title or len(title) < 10:
-            container = link.find_parent(['article', 'div', 'li', 'section'])
-            if container:
-                title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-                if title_tag:
-                    title = title_tag.get_text(strip=True)
+        # Génération d'un titre propre basé sur le slug de l'URL
+        path_parts = urlparse(full_url).path.split('/')
+        slug = path_parts[-1] if path_parts else "Actualité ULiège"
+        title = re.sub(r'[-_]', ' ', slug).capitalize()
 
-        if not title or len(title) < 10:
-            # Fallback sur le slug de l'URL si aucun texte n'est trouvé
-            path_parts = urlparse(full_url).path.split('/')
-            slug = path_parts[-1] if path_parts else "Actualité ULiège"
-            title = re.sub(r'[-_]', ' ', slug).capitalize()
-
-        if any(exc in title.lower() for exc in EXCLUDED_EXACT_TITLES):
+        if len(title) < 10 or any(exc in title.lower() for exc in EXCLUDED_EXACT_TITLES):
             continue
 
         if 'agenda' in full_url.lower() or 'evenement' in full_url.lower():
@@ -160,11 +142,11 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec BeautifulSoup + urllib...")
+        print("Démarrage du script avec recherche textuelle directe...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
         import traceback
-        print("ERREUR FATALE DANS LE SCRIPT :")
+        print("ERREUR FATALE DU SCRIPT :")
         traceback.print_exc()
         sys.exit(1)
