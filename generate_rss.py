@@ -27,7 +27,7 @@ EXCLUDED_URL_PARTS = [
     '/labels', '/s-informer', '/medias', '/conferences', '/annuaire', 
     '/facultes', '/etudes', '/recherche', '/agenda', '/contact', 
     '/plan', '/mentions-legales', '/credits', '/accessibilite',
-    '/portail', '/navigation', '/footer', '/menu'
+    '/portail', '/navigation', '/footer', '/menu', '/agenda-'
 ]
 
 def load_history():
@@ -83,9 +83,13 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Recherche directe dans toutes les chaînes entre guillemets du code source brut contenant /c_ suivi de chiffres
-    raw_matches = re.findall(r'["\']([^"\']*?/c_\d+[^"\']*)["\']', html_content)
-    print(f"DEBUG : {len(raw_matches)} correspondances brutes trouvées avec /c_XX/.")
+    # Recherche large de tous les liens de type /fr/ ou /cms/ dans le code source de la page
+    raw_matches = re.findall(r'["\'](/cms/[^"\']+)["\']', html_content)
+    print(f"DEBUG : {len(raw_matches)} correspondances brutes trouvées commençant par /cms/.")
+    
+    # Affichons un petit échantillon (les 10 premiers) dans les logs pour voir à quoi ils ressemblent
+    for sample in raw_matches[:10]:
+        print(f"  -> Échantillon URL trouvée : {sample}")
 
     seen_links = set()
     count = 0
@@ -111,10 +115,7 @@ def build_rss():
         slug = path_parts[-1] if path_parts else "Actualité ULiège"
         title = re.sub(r'[-_]', ' ', slug).capitalize()
 
-        if len(title) < 10 or any(exc in title.lower() for exc in EXCLUDED_EXACT_TITLES):
-            continue
-
-        if 'agenda' in full_url.lower() or 'evenement' in full_url.lower():
+        if len(title) < 8 or any(exc in title.lower() for exc in EXCLUDED_EXACT_TITLES):
             continue
 
         if full_url in history:
@@ -142,7 +143,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec recherche textuelle directe...")
+        print("Démarrage du script avec analyse des chemins /cms/...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
