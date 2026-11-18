@@ -122,14 +122,27 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Recherche ciblée sur les cartes/conteneurs d'articles de la grille
-    article_elements = soup.find_all(['article', 'div'], class_=re.compile(r'news|item|card|teaser|post|element', re.I))
+    # 1. Recherche ciblée sur les structures types de listes / portlets JCMS
+    article_elements = soup.find_all(['article', 'div', 'li'], class_=re.compile(r'portlet|item|card|pub|list-item|media|news', re.I))
+    
+    # 2. Fallback de sécurité si les classes spécifiques ont évolué (grilles JCMS)
+    if not article_elements:
+        article_elements = soup.find_all('div', class_=re.compile(r'col-|grid-|item', re.I))
+
     print(f"DEBUG : {len(article_elements)} conteneurs potentiels d'articles trouvés.")
 
     seen_links = set()
     count = 0
 
     for container in article_elements:
+        # Sécurité anti-menus JCMS : Ignorer si le conteneur est dans un menu, header ou footer
+        if container.find_parent(['nav', 'header', 'footer']):
+            continue
+        
+        classes = container.get('class', [])
+        if any('menu' in c.lower() or 'navigation' in c.lower() or 'footer' in c.lower() for c in classes):
+            continue
+
         link = container.find('a', href=True)
         if not link:
             continue
