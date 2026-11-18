@@ -98,29 +98,36 @@ def fetch_page_html():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-infobars',
+                '--window-size=1920,1080'
+            ]
         )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            locale="fr-FR"
         )
         page = context.new_page()
         
-        response = page.goto(BASE_URL, timeout=45000, wait_until="domcontentloaded")
+        # Masquer les indices d'automatisation de Playwright
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        response = page.goto(BASE_URL, timeout=45000, wait_until="networkidle")
         if response:
             print(f"Statut HTTP de la réponse : {response.status}")
         
-        print("Attente du chargement complet et de l'exécution du JavaScript (networkidle)...")
-        try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except Exception:
-            print("Attention : Délai d'attente networkidle dépassé, on continue...")
-            
-        try:
-            page.wait_for_selector("a[href*='/cms/']", timeout=10000)
-            print("Succès : Des liens /cms/ sont apparus dans le DOM !")
-        except Exception:
-            print("Attention : Aucun lien /cms/ détecté après le chargement.")
+        print("Simulation de mouvements et attente de décryptage du JS...")
+        # Simuler un mouvement de souris pour tromper les scripts de détection basiques
+        page.mouse.move(200, 200)
+        page.wait_for_timeout(6000) # Laisser le temps au script eval() de se résoudre
+        
+        # On essaie de scroller un peu pour déclencher d'éventuels chargements paresseux (lazy loading)
+        page.evaluate("window.scrollBy(0, 500)")
+        page.wait_for_timeout(3000)
 
         html_content = page.content()
         browser.close()
