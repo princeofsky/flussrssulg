@@ -91,47 +91,50 @@ def is_agenda_item(card, href, title):
     return False
 
 def fetch_page_html():
-    print("Étape 3 : Importation de Playwright à l'intérieur de la fonction...")
+    print("Étape 3 : Importation de Playwright et interception réseau...")
     from playwright.sync_api import sync_playwright
     
-    print(f"Lancement de Playwright pour interroger {BASE_URL}...")
+    intercepted_data = []
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-infobars',
-                '--window-size=1920,1080'
-            ]
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
-            locale="fr-FR"
+            viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
         
-        # Masquer les indices d'automatisation de Playwright
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        response = page.goto(BASE_URL, timeout=45000, wait_until="networkidle")
-        if response:
-            print(f"Statut HTTP de la réponse : {response.status}")
-        
-        print("Simulation de mouvements et attente de décryptage du JS...")
-        # Simuler un mouvement de souris pour tromper les scripts de détection basiques
-        page.mouse.move(200, 200)
-        page.wait_for_timeout(6000) # Laisser le temps au script eval() de se résoudre
-        
-        # On essaie de scroller un peu pour déclencher d'éventuels chargements paresseux (lazy loading)
-        page.evaluate("window.scrollBy(0, 500)")
-        page.wait_for_timeout(3000)
+        # Intercepter les réponses du réseau pour capturer les flux JSON ou HTML utiles
+        def handle_response(response):
+            try:
+                if '/cms/' in response.url and response.status == 200:
+                    ct = response.headers.get('content-type', '')
+                    if 'json' in ct or 'html' in ct:
+                        body = response.text()
+                        if len(body) > 2000: # On cherche un contenu d'articles conséquent
+                            intercepted_data.append(body)
+            except Exception:
+                pass
 
-        html_content = page.content()
+        page.on("response", handle_response)
+        
+        try:
+            page.goto(BASE_URL, timeout=45000, wait_until="domcontentloaded")
+            page.wait_for_timeout(8000) # Laisser le temps aux requêtes AJAX de passer
+        except Exception as e:
+            print(f"Erreur lors du chargement : {e}")
+
         browser.close()
-        return html_content
+        
+        # Si on a capturé du contenu riche via le réseau, on l'utilise, sinon on renvoie le HTML classique
+        if intercepted_data:
+            print(f"Succès : {len(intercepted_data)} flux de données interceptés via le réseau !")
+            return intercepted_data[-1] # On prend le dernier bloc de données le plus complet
+        
+        return page.content()
 
 def build_rss():
     html_content = fetch_page_html()
