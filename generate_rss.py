@@ -9,9 +9,9 @@ from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
-import requests
+import urllib.request
 
-print("Étape 2 : BeautifulSoup, FeedGenerator et requests importés.")
+print("Étape 2 : BeautifulSoup, FeedGenerator et urllib importés.")
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -75,15 +75,21 @@ def is_agenda_item(card, href, title):
     return False
 
 def fetch_page_html():
-    print(f"Interrogation de {BASE_URL} via requests...")
+    print(f"Interrogation de {BASE_URL} via urllib...")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     }
-    response = requests.get(BASE_URL, headers=headers, timeout=30)
-    print(f"Statut HTTP : {response.status_code}")
-    return response.text
+    req = urllib.request.Request(BASE_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            html_content = response.read().decode('utf-8', errors='ignore')
+            print(f"Statut HTTP : {response.status}")
+            return html_content
+    except Exception as e:
+        print(f"Erreur lors de la requête HTTP : {e}")
+        return ""
 
 def build_rss():
     html_content = fetch_page_html()
@@ -176,7 +182,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec requests...")
+        print("Démarrage du script avec urllib...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
