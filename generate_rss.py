@@ -9,8 +9,9 @@ from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
+import requests
 
-print("Étape 2 : BeautifulSoup et FeedGenerator importés.")
+print("Étape 2 : BeautifulSoup, FeedGenerator et requests importés.")
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -20,7 +21,7 @@ EXCLUDED_EXACT_TITLES = [
     "labels et accréditations", "s'informer", "médias de l'uliège", "grandes conférences universitaires",
     "facultés et instituts", "études", "recherche", "agenda", "portail news", "toutes les news",
     "voir le documentaire", "recherche & innovation", "l'université de liège", "news & agendas",
-    "international", "presse", "lire la suite", "en savoir plus", "en savoir +", "tous los événements", "voir l'agenda"
+    "international", "presse", "lire la suite", "en savoir plus", "en savoir +", "tous les événements", "voir l'agenda"
 ]
 
 EXCLUDED_URL_PARTS = [
@@ -53,49 +54,44 @@ def clean_url(href):
         href = '/' + href
     return urljoin(DOMAIN_BASE, href)
 
-def fetch_page_data():
-    print("Étape 3 : Importation de Playwright et interception réseau...")
-    from playwright.sync_api import sync_playwright
-    
-    intercepted_payloads = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+def extract_image(card, current_url):
+    for img in card.find_all('img'):
+        src = (
+            img.get('src') or 
+            img.get('data-src') or 
+            img.get('data-lazy-src') or 
+            img.get('data-original')
         )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
-        )
-        page = context.new_page()
-        
-        def handle_response(response):
-            try:
-                # On cherche les requêtes qui retournent du contenu en lien avec les cms ou listes
-                if ('/cms/' in response.url or 'json' in response.headers.get('content-type', '')) and response.status == 200:
-                    body = response.text()
-                    if len(body) > 500:
-                        intercepted_payloads.append((response.url, response.headers.get('content-type', ''), body))
-            except Exception:
-                pass
+        if not src and img.get('srcset'):
+            src = img.get('srcset').split(',')[0].strip().split()[0]
+        if src and not src.startswith('data:'):
+            return clean_url(src)
+    return None
 
-        page.on("response", handle_response)
-        
-        try:
-            page.goto(BASE_URL, timeout=45000, wait_until="networkidle")
-            page.wait_for_timeout(6000)
-        except Exception as e:
-            print(f"Erreur lors du chargement : {e}")
+def is_agenda_item(card, href, title):
+    href_lower = href.lower()
+    if any(k in href_lower for k in ['/agenda', '/evenement', '/event', 'calendar']):
+        return True
+    return False
 
-        browser.close()
-        return intercepted_payloads
+def fetch_page_html():
+    print(f"Interrogation de {BASE_URL} via requests...")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+    response = requests.get(BASE_URL, headers=headers, timeout=30)
+    print(f"Statut HTTP : {response.status_code}")
+    return response.text
 
 def build_rss():
-    payloads = fetch_page_data()
-    print(f"Nombre de flux réseau interceptés : {len(payloads)}")
+    html_content = fetch_page_html()
+    print(f"Taille du HTML récupéré : {len(html_content)} octets")
     
+    soup = BeautifulSoup(html_content, "html.parser")
     history = load_history()
+
     fg = FeedGenerator()
     fg.id(BASE_URL)
     fg.title("ULiège - Toutes les news")
@@ -104,69 +100,75 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    count = 0
+    all_links = soup.find_all('a', href=True)
+    print(f"DEBUG : {len(all_links)} liens totaux trouvés sur la page.")
+
     seen_links = set()
+    count = 0
 
-    # Analyse des payloads interceptés
-    for url, content_type, body in payloads:
-        print(f"Inspection de l'URL interceptée : {url} (Type: {content_type})")
-        
-        # Si c'est du JSON, on peut tenter d'extraire des structures d'articles
-        if 'json' in content_type.lower():
-            try:
-                data = json.loads(body)
-                print(" -> Format JSON détecté. (Affichage partiel pour debug si besoin)")
-                # Si le JSON contient une liste d'articles, on pourra les parser ici
-            except json.JSONDecodeError:
-                pass
+    for link in all_links:
+        href = link.get('href')
+        full_url = clean_url(href)
 
-        # Si c'est du HTML, on le parse avec BeautifulSoup comme avant
-        if 'html' in content_type.lower() or '<html' in body.lower():
-            soup = BeautifulSoup(body, "html.parser")
-            all_links = soup.find_all('a', href=True)
-            print(f" -> HTML détecté : {len(all_links)} liens trouvés dans ce flux.")
+        if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
+            continue
 
-            for link in all_links:
-                href = link.get('href')
-                full_url = clean_url(href)
+        if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
+            continue
 
-                if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
-                    continue
-                if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
-                    continue
-                if link.find_parent(['nav', 'header', 'footer', 'aside']):
-                    continue
+        if link.find_parent(['nav', 'header', 'footer', 'aside']):
+            continue
 
-                container = link.find_parent(['article', 'div', 'li', 'section']) or link
-                title = link.get_text(strip=True)
-                if not title or len(title) < 15:
-                    title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-                    if title_tag:
-                        title = title_tag.get_text(strip=True)
+        container = link.find_parent(['article', 'div', 'li', 'section']) or link
 
-                if not title or len(title) < 15 or any(exc in title.lower() for exc in EXCLUDED_EXACT_TITLES):
-                    continue
+        parent_classes = " ".join([str(cls) for p in link.parents for cls in p.get('class', [])]).lower()
+        if any(term in parent_classes for term in ['menu', 'nav', 'breadcrumb', 'footer', 'header', 'facette', 'filter']):
+            continue
 
-                if full_url in seen_links:
-                    continue
-                seen_links.add(full_url)
+        title = link.get_text(strip=True)
+        if not title or len(title) < 15:
+            title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
+            if title_tag:
+                title = title_tag.get_text(strip=True)
 
-                if full_url in history:
-                    pub_date = datetime.fromisoformat(history[full_url])
-                else:
-                    pub_date = datetime.now(timezone.utc)
-                    history[full_url] = pub_date.isoformat()
+        if not title or len(title) < 15:
+            continue
 
-                fe = fg.add_entry()
-                fe.id(full_url)
-                fe.title(title)
-                fe.link(href=full_url)
-                fe.description(f"<p>{title}</p>")
-                fe.pubDate(pub_date)
+        title_lower = title.lower()
+        if any(exc in title_lower for exc in EXCLUDED_EXACT_TITLES):
+            continue
 
-                count += 1
-                if count >= 35:
-                    break
+        if is_agenda_item(container, href, title):
+            continue
+
+        if full_url in seen_links:
+            continue
+        seen_links.add(full_url)
+
+        image_url = extract_image(container, full_url)
+        summary_text = title
+
+        if full_url in history:
+            pub_date = datetime.fromisoformat(history[full_url])
+        else:
+            pub_date = datetime.now(timezone.utc)
+            history[full_url] = pub_date.isoformat()
+
+        description_html = ""
+        if image_url:
+            description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
+        description_html += f'<p>{summary_text}</p>'
+
+        fe = fg.add_entry()
+        fe.id(full_url)
+        fe.title(title)
+        fe.link(href=full_url)
+        fe.description(description_html)
+        fe.pubDate(pub_date)
+
+        count += 1
+        if count >= 35:
+            break
 
     save_history(history)
     fg.rss_file('feed.xml')
@@ -174,7 +176,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec analyse des flux réseau...")
+        print("Démarrage du script avec requests...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
