@@ -96,21 +96,27 @@ def fetch_page_html():
     
     print(f"Lancement de Playwright pour interroger {BASE_URL}...")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        page.goto(BASE_URL, timeout=45000)
+        # Lancement avec options anti-détection bot
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+        )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
+        )
+        page = context.new_page()
+        
+        response = page.goto(BASE_URL, timeout=45000)
+        if response:
+            print(f"Statut HTTP de la réponse : {response.status}")
         
         print("Attente du chargement complet du contenu JavaScript...")
-        # On attend qu'au moins un lien d'article /cms/ soit présent dans le DOM (sécurité anti-blocage)
-        try:
-            page.wait_for_selector("a[href*='/cms/']", timeout=15000)
-            print("Sélecteur de liens /cms/ détecté avec succès.")
-        except Exception:
-            print("Attention : Délai d'attente dépassé pour le sélecteur /cms/, on continue avec le HTML brut.")
-            
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(5000)
         
         html_content = page.content()
+        print(f"Extrait du HTML récupéré (300 premiers caractères) :\n{html_content[:300]}")
+        
         browser.close()
         return html_content
 
@@ -129,7 +135,6 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    # Analyse robuste basée sur tous les liens de la page contenant '/cms/'
     all_links = soup.find_all('a', href=True)
     print(f"DEBUG : {len(all_links)} liens totaux trouvés sur la page.")
 
@@ -140,26 +145,21 @@ def build_rss():
         href = link.get('href')
         full_url = clean_url(href)
 
-        # Filtrer uniquement les liens valides d'articles ULiège contenant /cms/
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
             continue
 
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
             continue
 
-        # Sécurité anti-menus : Ignorer si le lien se trouve dans un menu, header, footer ou aside
         if link.find_parent(['nav', 'header', 'footer', 'aside']):
             continue
 
-        # Remonter au conteneur parent proche pour trouver l'image
         container = link.find_parent(['article', 'div', 'li', 'section']) or link
 
-        # Ignorer si le conteneur ou ses parents ont des classes de navigation/menu
         parent_classes = " ".join([str(cls) for p in link.parents for cls in p.get('class', [])]).lower()
         if any(term in parent_classes for term in ['menu', 'nav', 'breadcrumb', 'footer', 'header', 'facette', 'filter']):
             continue
 
-        # Extraction du titre
         title = link.get_text(strip=True)
         if not title or len(title) < 15:
             title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
@@ -211,7 +211,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script principal avec ciblage par liens robustes...")
+        print("Démarrage du script principal...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
