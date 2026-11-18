@@ -5,13 +5,12 @@ import re
 
 print("Étape 1 : Modules de base importés.")
 
-from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 import urllib.request
 
-print("Étape 2 : BeautifulSoup, FeedGenerator et urllib importés.")
+print("Étape 2 : FeedGenerator et urllib importés.")
 
 BASE_URL = "https://www.news.uliege.be/cms/c_9435330/fr/portail-news-agendas-toutes-les-news"
 DOMAIN_BASE = "https://www.news.uliege.be"
@@ -54,26 +53,6 @@ def clean_url(href):
         href = '/' + href
     return urljoin(DOMAIN_BASE, href)
 
-def extract_image(card, current_url):
-    for img in card.find_all('img'):
-        src = (
-            img.get('src') or 
-            img.get('data-src') or 
-            img.get('data-lazy-src') or 
-            img.get('data-original')
-        )
-        if not src and img.get('srcset'):
-            src = img.get('srcset').split(',')[0].strip().split()[0]
-        if src and not src.startswith('data:'):
-            return clean_url(src)
-    return None
-
-def is_agenda_item(card, href, title):
-    href_lower = href.lower()
-    if any(k in href_lower for k in ['/agenda', '/evenement', '/event', 'calendar']):
-        return True
-    return False
-
 def fetch_page_html():
     print(f"Interrogation de {BASE_URL} via urllib...")
     headers = {
@@ -95,9 +74,7 @@ def build_rss():
     html_content = fetch_page_html()
     print(f"Taille du HTML récupéré : {len(html_content)} octets")
     
-    soup = BeautifulSoup(html_content, "html.parser")
     history = load_history()
-
     fg = FeedGenerator()
     fg.id(BASE_URL)
     fg.title("ULiège - Toutes les news")
@@ -106,14 +83,15 @@ def build_rss():
     fg.description("Flux RSS des actualités de l'Université de Liège")
     fg.language('fr')
 
-    all_links = soup.find_all('a', href=True)
-    print(f"DEBUG : {len(all_links)} liens totaux trouvés sur la page.")
+    # Extraction directe via Regex des URLs contenant /cms/ dans tout le texte brut
+    raw_urls = re.findall(r'https?://[^\s<>"]+?/cms/[^\s<>"]*|/[^\s<>"]+?/cms/[^\s<>"]*', html_content)
+    print(f"DEBUG : {len(raw_urls)} URLs brutes contenant '/cms/' trouvées.")
 
     seen_links = set()
     count = 0
 
-    for link in all_links:
-        href = link.get('href')
+    for href in raw_urls:
+        href = href.strip('"\'\\')
         full_url = clean_url(href)
 
         if not full_url or 'uliege.be' not in full_url or '/cms/' not in full_url:
@@ -122,37 +100,20 @@ def build_rss():
         if any(exc in full_url.lower() for exc in EXCLUDED_URL_PARTS):
             continue
 
-        if link.find_parent(['nav', 'header', 'footer', 'aside']):
-            continue
-
-        container = link.find_parent(['article', 'div', 'li', 'section']) or link
-
-        parent_classes = " ".join([str(cls) for p in link.parents for cls in p.get('class', [])]).lower()
-        if any(term in parent_classes for term in ['menu', 'nav', 'breadcrumb', 'footer', 'header', 'facette', 'filter']):
-            continue
-
-        title = link.get_text(strip=True)
-        if not title or len(title) < 15:
-            title_tag = container.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-            if title_tag:
-                title = title_tag.get_text(strip=True)
-
-        if not title or len(title) < 15:
-            continue
-
-        title_lower = title.lower()
-        if any(exc in title_lower for exc in EXCLUDED_EXACT_TITLES):
-            continue
-
-        if is_agenda_item(container, href, title):
-            continue
-
         if full_url in seen_links:
             continue
         seen_links.add(full_url)
 
-        image_url = extract_image(container, full_url)
-        summary_text = title
+        # Génération d'un titre basé sur le slug de l'URL
+        path_parts = urlparse(full_url).path.split('/')
+        slug = path_parts[-1] if path_parts else "Actualité ULiège"
+        clean_title = re.sub(r'[-_]', ' ', slug).capitalize()
+
+        if len(clean_title) < 10 or any(exc in clean_title.lower() for exc in EXCLUDED_EXACT_TITLES):
+            continue
+
+        if 'agenda' in full_url.lower() or 'evenement' in full_url.lower():
+            continue
 
         if full_url in history:
             pub_date = datetime.fromisoformat(history[full_url])
@@ -160,14 +121,11 @@ def build_rss():
             pub_date = datetime.now(timezone.utc)
             history[full_url] = pub_date.isoformat()
 
-        description_html = ""
-        if image_url:
-            description_html += f'<p><img src="{image_url}" alt="{title}" style="max-width:100%; height:auto;" /></p>'
-        description_html += f'<p>{summary_text}</p>'
+        description_html = f"<p>Actualité de l'Université de Liège : <a href='{full_url}'>Lire l'article</a></p>"
 
         fe = fg.add_entry()
         fe.id(full_url)
-        fe.title(title)
+        fe.title(clean_title)
         fe.link(href=full_url)
         fe.description(description_html)
         fe.pubDate(pub_date)
@@ -182,7 +140,7 @@ def build_rss():
 
 if __name__ == '__main__':
     try:
-        print("Démarrage du script avec urllib...")
+        print("Démarrage du script avec extraction Regex...")
         build_rss()
         print("Script exécuté avec succès !")
     except Exception as e:
