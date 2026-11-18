@@ -96,7 +96,6 @@ def fetch_page_html():
     
     print(f"Lancement de Playwright pour interroger {BASE_URL}...")
     with sync_playwright() as p:
-        # Lancement avec options anti-détection bot
         browser = p.chromium.launch(
             headless=True,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
@@ -107,22 +106,29 @@ def fetch_page_html():
         )
         page = context.new_page()
         
-        response = page.goto(BASE_URL, timeout=45000)
+        response = page.goto(BASE_URL, timeout=45000, wait_until="domcontentloaded")
         if response:
             print(f"Statut HTTP de la réponse : {response.status}")
         
-        print("Attente du chargement complet du contenu JavaScript...")
-        page.wait_for_timeout(5000)
-        
+        print("Attente du chargement complet et de l'exécution du JavaScript (networkidle)...")
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            print("Attention : Délai d'attente networkidle dépassé, on continue...")
+            
+        try:
+            page.wait_for_selector("a[href*='/cms/']", timeout=10000)
+            print("Succès : Des liens /cms/ sont apparus dans le DOM !")
+        except Exception:
+            print("Attention : Aucun lien /cms/ détecté après le chargement.")
+
         html_content = page.content()
-        print(f"Extrait du HTML récupéré (300 premiers caractères) :\n{html_content[:300]}")
-        
         browser.close()
         return html_content
 
 def build_rss():
     html_content = fetch_page_html()
-    print(f"Taille du HTML récupéré via Playwright : {len(html_content)} octets")
+    print(f"Taille finale du HTML traité : {len(html_content)} octets")
     
     soup = BeautifulSoup(html_content, "html.parser")
     history = load_history()
@@ -177,8 +183,9 @@ def build_rss():
             continue
 
         if full_url in seen_links:
-            continue
-        seen_links.add(full_url)
+            container_is_new = False
+        else:
+            seen_links.add(full_url)
 
         image_url = extract_image(container, full_url)
         summary_text = title
